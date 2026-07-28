@@ -1,0 +1,27 @@
+[project]
+name = "kos-code-intelligence"
+version = "0.1.0"
+description = "KOS Code Intelligence MVP: static code knowledge graph for Python projects."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+api = [
+  "fastapi>=0.111",
+  "uvicorn>=0.30",
+]
+test = [
+  "pytest>=8",
+]
+
+[project.scripts]
+kos = "kos.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
