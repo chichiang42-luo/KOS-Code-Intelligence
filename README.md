@@ -1,221 +1,354 @@
 # KOS Code Intelligence
 
-KOS Code Intelligence is a local code knowledge graph engine for coding agents.
+[![CI](https://github.com/chichiang42-luo/KOS-Code-Intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/chichiang42-luo/KOS-Code-Intelligence/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/kos-code-intelligence.svg)](https://pypi.org/project/kos-code-intelligence/)
+[![Python](https://img.shields.io/pypi/pyversions/kos-code-intelligence.svg)](https://pypi.org/project/kos-code-intelligence/)
+[![License](https://img.shields.io/github/license/chichiang42-luo/KOS-Code-Intelligence.svg)](LICENSE)
+[![Status: Alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#project-status)
 
-Instead of asking an agent to repeatedly scan source files and infer relationships from raw text, KOS indexes a Python repository into structured nodes and edges: files, modules, classes, functions, methods, imports, calls, inheritance, and containment. Agents can then query this graph through stable JSON CLI commands before editing code.
+KOS is a local multi-language code knowledge graph and MCP server for coding agents.
 
-This repository is an MVP. It is designed to validate whether a code knowledge graph can become a useful context engine for coding agents.
+It indexes files, modules, classes, functions, methods, imports, calls, inheritance, and containment into SQLite. Agents can resolve symbols, inspect callers and dependencies, estimate impact, and receive a prioritized read plan with file-and-line evidence.
+
+KOS runs locally, keeps the index beside the repository (or in a storage directory you choose), and does not require a hosted database or embedding service.
+
+> [!IMPORTANT]
+> KOS v0.3 is alpha software. Its index format and public interfaces may change between minor releases. See [Project status](#project-status) and [Current limits](#current-limits) before production use.
+
+## Contents
+
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Installation](#installation)
+- [Supported languages](#supported-languages)
+- [Index lifecycle](#index-lifecycle)
+- [Agent CLI](#agent-cli)
+- [MCP server](#mcp-server)
+- [Evaluation](#evaluation)
+- [Development](#development)
+- [Contributing and security](#contributing-and-security)
+- [Project status](#project-status)
+- [License](#license)
 
 ## Features
 
-- Python AST indexing for files, modules, classes, functions, methods, imports, inheritance, and calls.
+- Incremental indexing with file freshness checks across Python, JavaScript, TypeScript/TSX, CSS, Bash, Go, Java, Rust, C, and C++.
+- Python AST analysis plus offline Tree-sitter grammar packages for the other supported languages.
+- Stable node IDs that survive line movement.
+- Transactional SQLite updates and versioned index metadata.
 - Graph relationships: `CONTAINS`, `DEFINES`, `IMPORTS`, `CALLS`, `MAY_CALL`, and `INHERITS`.
-- JSONL logs plus SQLite current-state storage under `.kos/`.
-- Agent-friendly CLI commands for symbol resolution, caller/callee lookup, impact analysis, and read-plan generation.
-- Optional FastAPI app for REST access.
-- A small sample repository under `sample_data/sample_shop`.
-- Standard-library `unittest` coverage for the core MVP path.
+- Agent-friendly CLI JSON and a repository-bound MCP stdio server.
+- Evidence, confidence, ambiguity handling, limits, and truncation metadata.
+- Versioned automated evaluation suites.
+- Experimental REST API.
+
+## Quick Start
+
+Install KOS, index a repository, and ask for an agent-ready context pack:
+
+```bash
+pipx install kos-code-intelligence
+kos update --repo /path/to/project
+kos agent-pack ModelManager --repo /path/to/project
+```
+
+Check which languages KOS found and whether the index is current:
+
+```bash
+kos languages --repo /path/to/project
+kos status --repo /path/to/project
+```
+
+KOS stores generated index data under `.kos/` by default. Add `.kos/` to the target repository's `.gitignore`; it is local, reproducible data and should not be committed.
 
 ## Installation
 
-Clone the repository:
+Install the command-line tool and MCP server:
+
+```bash
+pipx install kos-code-intelligence
+```
+
+Alternatively:
+
+```bash
+python -m pip install kos-code-intelligence
+```
+
+For development:
 
 ```bash
 git clone https://github.com/chichiang42-luo/KOS-Code-Intelligence.git
 cd KOS-Code-Intelligence
+python -m pip install -e ".[test]"
 ```
 
-Use Python 3.11+.
+KOS supports Python 3.11 through 3.13.
 
-For local development without installation:
+## Supported Languages
+
+| Language | Extensions | Indexed concepts |
+|---|---|---|
+| Python | `.py`, `.pyi` | Modules, classes, functions, methods, imports, calls, inheritance |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | Classes, functions, methods, imports, calls, inheritance |
+| TypeScript/TSX | `.ts`, `.tsx` | Classes, interfaces, functions, methods, imports, calls, inheritance |
+| CSS | `.css` | Stylesheets, selectors, `@import` dependencies |
+| Bash | `.sh`, `.bash` | Functions, `source` dependencies, command calls |
+| Go | `.go` | Structs, interfaces, functions, methods, imports, calls |
+| Java | `.java` | Classes, interfaces, enums, records, methods, imports, calls, inheritance |
+| Rust | `.rs` | Structs, traits, enums, functions, methods, `use`, calls, trait implementations |
+| C | `.c`, `.h` | Structs, functions, includes, calls |
+| C++ | `.cc`, `.cpp`, `.cxx`, `.hh`, `.hpp`, `.hxx` | Classes, structs, functions, methods, includes, calls, inheritance |
+
+Run `kos languages --repo /path/to/project` to see both supported languages and counts in the current repository.
+
+## Index Lifecycle
+
+Create or update an index:
 
 ```bash
-export PYTHONPATH=src
+kos update --repo /path/to/project
 ```
 
-On Windows PowerShell:
-
-```powershell
-$env:PYTHONPATH='src'
-```
-
-You can also install it in editable mode:
+KOS writes `.kos/` inside the project by default. Keep storage elsewhere when the target repository should remain untouched:
 
 ```bash
-python -m pip install -e .
+kos update --repo /path/to/project --store-root /path/to/kos-store
 ```
 
-Optional API dependencies:
+Check freshness:
 
 ```bash
-python -m pip install -e ".[api]"
+kos status --repo /path/to/project
 ```
 
-## Quick Start
-
-Index the included sample project:
+Run diagnostics:
 
 ```bash
-python -m kos.cli index --repo sample_data/sample_shop --repo-id sample_shop
+kos doctor --repo /path/to/project
 ```
 
-Search a symbol:
+`kos update` performs the first full index and then parses only added or changed files. Unchanged observations are loaded from the local cache before relationships are resolved globally.
+
+## Agent CLI
+
+Use `agent-pack` as the default entry point:
 
 ```bash
-python -m kos.cli search verify_payment --repo sample_data/sample_shop
+kos agent-pack ModelManager --repo /path/to/project
 ```
 
-Ask for an agent-ready context pack:
-
-```bash
-python -m kos.cli agent-pack verify_payment --repo sample_data/sample_shop
-```
-
-Index an external repository without writing `.kos` into that repository:
-
-```bash
-python -m kos.cli index --repo /path/to/project --repo-id my_project --store-root .kos_runs/my_project
-```
-
-Query that external index:
-
-```bash
-python -m kos.cli agent-pack SomeSymbol --store-root .kos_runs/my_project
-```
-
-## Agent Tools
-
-The `agent-*` commands return stable JSON intended for coding agents.
+Available commands:
 
 | Command | Purpose |
 |---|---|
-| `agent-resolve QUERY` | Resolve a symbol, fully qualified name, or file path into a target node or candidates |
-| `agent-who-calls QUERY` | Return incoming `CALLS` facts |
-| `agent-calls QUERY` | Return outgoing `CALLS` facts |
-| `agent-impact QUERY` | Return one-hop `CALLS`, `IMPORTS`, and `INHERITS` facts |
-| `agent-read-plan QUERY` | Return the files an agent should read before editing |
-| `agent-pack QUERY` | Return target, facts, read-plan files, and limits in one payload |
+| `agent-resolve QUERY` | Resolve a symbol, qualified name, or file path |
+| `agent-who-calls QUERY` | Return direct callers |
+| `agent-calls QUERY` | Return direct called dependencies |
+| `agent-impact QUERY` | Return one-hop call, import, and inheritance impact |
+| `agent-read-plan QUERY` | Return prioritized files to read |
+| `agent-pack QUERY` | Return the target, facts, evidence, and read plan |
 
-Example:
+Ambiguous and missing symbols are normal structured results. KOS does not choose an arbitrary target when several symbols have the same name.
+
+## MCP Server
+
+Start a repository-bound stdio server:
 
 ```bash
-python -m kos.cli agent-pack verify_payment --repo sample_data/sample_shop --limit-files 10 --limit-facts 40
+kos-mcp --repo /path/to/project
 ```
 
-JSON shape:
+A generic MCP client configuration looks like:
 
 ```json
 {
-  "status": "ok",
-  "query": "verify_payment",
-  "target": {
-    "node_id": "...",
-    "fqname": "app.payment.service.verify_payment",
-    "kind": "function",
-    "file_path": "app/payment/service.py",
-    "span": {"start_line": 4, "start_col": 0, "end_line": 6, "end_col": 35},
-    "signature": "verify_payment(order_id)"
-  },
-  "candidates": [],
-  "files": [
-    {
-      "file_path": "app/payment/service.py",
-      "priority": 1,
-      "reason": "target definition",
-      "related_nodes": ["..."]
+  "mcpServers": {
+    "kos": {
+      "command": "kos-mcp",
+      "args": ["--repo", "/absolute/path/to/project"]
     }
-  ],
-  "facts": [
-    {
-      "rel_type": "CALLS",
-      "src": {},
-      "dst": {},
-      "confidence": 0.85,
-      "evidence": []
-    }
-  ],
-  "limits": {
-    "candidate_limit": 10,
-    "file_limit": 10,
-    "fact_limit": 40
   }
 }
 ```
 
-## REST API
+The server exposes:
 
-The REST API is optional. Install the API dependencies first:
+- `kos_status`
+- `kos_languages`
+- `kos_update`
+- `kos_resolve`
+- `kos_who_calls`
+- `kos_calls`
+- `kos_impact`
+- `kos_read_plan`
+- `kos_pack`
 
-```bash
-python -m pip install -e ".[api]"
+The server is restricted to the repository and storage root selected at startup. Tool arguments cannot register or access another repository. Logs are written to stderr so stdout remains reserved for MCP messages.
+
+Agents should call `kos_status` first, call `kos_update` when needed, and use `kos_pack` before reading or editing a target symbol.
+
+## Source Reading Scope
+
+KOS narrows source reading; it does not replace it. The graph answers where a symbol is defined, who calls it, what it calls, and which files are likely affected. The implementation body still answers how the behavior works.
+
+An Agent normally reads only:
+
+1. The target symbol span and its containing file.
+2. Direct caller files that constrain inputs, outputs, and error handling.
+3. Direct dependency files whose contracts may change.
+4. Related base classes, traits, interfaces, imports, or registration points from the read plan.
+
+The Agent should expand beyond that one-hop set only when evidence is ambiguous, dynamic dispatch or generated code is involved, tests reveal another dependency, or the requested change crosses an architectural boundary. It should not load every source file in the repository by default.
+
+## Structured Output
+
+Agent query results use schema version `1.0`:
+
+```json
+{
+  "schema_version": "1.0",
+  "status": "ok",
+  "query": "verify_payment",
+  "target": {
+    "node_id": "node_...",
+    "fqname": "app.payment.service.verify_payment",
+    "kind": "function",
+    "file_path": "app/payment/service.py",
+    "span": {
+      "start_line": 4,
+      "start_col": 0,
+      "end_line": 6,
+      "end_col": 35
+    },
+    "signature": "verify_payment(order_id)"
+  },
+  "candidates": [],
+  "files": [],
+  "facts": [],
+  "index": {
+    "state": "fresh",
+    "repo_id": "sample_shop",
+    "indexed_at": "2026-07-30T00:00:00+00:00",
+    "changed_files": 0
+  },
+  "limits": {
+    "candidate_limit": 10,
+    "file_limit": 10,
+    "fact_limit": 40,
+    "candidates_truncated": false,
+    "files_truncated": false,
+    "facts_truncated": false
+  },
+  "error": null
+}
 ```
 
-Start the API:
+Query status is `ok`, `ambiguous`, `not_found`, or `error`. Index freshness is reported separately as `fresh`, `stale`, `uninitialized`, or `incompatible`.
+
+## Evaluation
+
+Run the included evaluation suite:
 
 ```bash
-python -m kos.cli serve --repo sample_data/sample_shop --host 127.0.0.1 --port 8031
+kos eval \
+  --repo sample_data/sample_shop \
+  --store-root .kos_runs/sample-eval \
+  --cases evals/sample_shop.json
 ```
 
-Endpoints:
+The command reports case failures and p50/p95 query latency. It exits nonzero when any case fails, so it can run in CI.
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/index/repo` | Index a repository |
-| `GET` | `/search?q=verify_payment` | Search nodes |
-| `GET` | `/nodes/{node_id}` | Fetch node details |
-| `GET` | `/edges/{edge_id}` | Fetch edge details |
-| `GET` | `/history/{entity_id}` | Fetch entity history |
-| `GET` | `/graph/neighborhood` | Fetch local graph slice |
-| `GET` | `/graph/path` | Find a short directed path |
-| `GET` | `/healthz` | Health check |
+Evaluation files use versioned JSON and can assert:
+
+- Expected query status.
+- Target fully qualified name.
+- Required read-plan files.
+- Required relation type, source, and destination.
+
+## Index Compatibility
+
+Indexes created by v0.1 or v0.2 are intentionally not modified in place. KOS reports them as `incompatible` because v0.3 records per-file language metadata.
+
+Rebuild explicitly:
+
+```bash
+kos index --repo /path/to/project --rebuild
+```
+
+The previous SQLite files are copied to `.kos/backups/` before replacement.
+
+## Experimental REST API
+
+Install API dependencies:
+
+```bash
+python -m pip install "kos-code-intelligence[api]"
+```
+
+Start the server:
+
+```bash
+kos serve --repo /path/to/project --host 127.0.0.1 --port 8031
+```
+
+The REST API is experimental. CLI and MCP are the supported Agent interfaces for v0.3.
 
 ## Development
 
-Run tests:
+```bash
+python -m unittest discover -s tests -v
+ruff check .
+python -m build
+```
+
+Run the source tree without installation:
 
 ```bash
 export PYTHONPATH=src
-python -m unittest discover -s tests -v
+python -m kos.cli --version
 ```
 
-On Windows PowerShell:
+PowerShell:
 
 ```powershell
-$env:PYTHONPATH='src'
-python -m unittest discover -s tests -v
+$env:PYTHONPATH = "src"
+python -m kos.cli --version
 ```
 
-Project layout:
+The full contributor workflow and pull-request expectations are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-```text
-src/kos/
-  observation.py   # Python ast -> observations
-  discovery.py     # observations -> nodes and edges
-  storage.py       # JSONL + SQLite storage
-  agent_tools.py   # agent-facing query layer
-  cli.py           # command line interface
-  api.py           # optional FastAPI REST app
-sample_data/sample_shop/
-tests/
-deep-research-report.md
+## Troubleshooting Tree-sitter
+
+KOS v0.3.1 requires `tree-sitter>=0.25,<0.26`. Tree-sitter 0.26.0 can terminate Python with an access violation while traversing large syntax trees on Windows, so KOS rejects that runtime before indexing.
+
+Repair an existing environment with:
+
+```bash
+python -m pip install --upgrade "kos-code-intelligence==0.3.1" "tree-sitter>=0.25,<0.26"
+kos doctor --repo /path/to/project
 ```
+
+KOS validates the PID stored in `.kos/index.lock`. A lock left by a crashed process is removed automatically; a lock owned by a live process is preserved.
 
 ## Current Limits
 
-- Python only.
-- Static AST analysis only; runtime behavior is not traced.
-- Import and call resolution is intentionally conservative and name-based.
-- Tree-sitter, Neo4j export, React Flow UI, embedding search, and MCP integration are planned extension points.
-- Validation and revision are minimal: reindexing reconfirms known entities and marks missing active entities as deleted.
+- Static analysis only; runtime dispatch is not traced.
+- Cross-language runtime links, framework dependency injection, and general object type inference are not implemented.
+- HTML/templates, C#, Kotlin, Swift, and generated code are not indexed yet.
+- Impact analysis is limited to one hop.
+- Multi-repository MCP servers, background watchers, embeddings, Neo4j, and UI are outside v0.3.
 
-## MVP Validation
+## Contributing and Security
 
-The included sample repository indexes successfully with:
+Issues and pull requests are welcome. Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and run the test, lint, build, and evaluation commands described there.
 
-- 16 Python files scanned
-- 54 nodes
-- 90 edges
-- 1 syntax error captured without crashing
+Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in a public issue. Release history is maintained in [CHANGELOG.md](CHANGELOG.md).
 
-The MVP has also been tested on a larger local Python project with 174 Python files, producing 3040 nodes and 9887 edges with zero parse errors.
+## Project Status
 
+KOS is an actively developed alpha project. The v0.3 line focuses on validating whether a maintained, polyglot code graph can improve context selection for coding agents. CLI and MCP are the primary supported interfaces; the REST API remains experimental.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

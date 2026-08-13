@@ -4,8 +4,8 @@ import json
 from collections import OrderedDict
 from typing import Any
 
+from . import OUTPUT_SCHEMA_VERSION
 from .storage import Store
-
 
 AGENT_FACT_LIMIT = 40
 AGENT_FILE_LIMIT = 10
@@ -14,28 +14,22 @@ IMPACT_REL_TYPES = {"CALLS", "IMPORTS", "INHERITS"}
 
 
 def agent_resolve(store: Store, query: str, candidate_limit: int = AGENT_CANDIDATE_LIMIT) -> dict[str, Any]:
-    candidates = resolve_candidates(store, query, candidate_limit)
+    candidates, truncated = resolve_candidates_with_meta(store, query, candidate_limit)
     if not candidates:
         return empty_result("not_found", query)
     if len(candidates) == 1:
-        return {
-            "status": "ok",
-            "query": query,
-            "target": summarize_node(candidates[0]),
-            "candidates": [],
-            "files": [],
-            "facts": [],
-            "limits": limits(candidate_limit=candidate_limit),
-        }
-    return {
-        "status": "ambiguous",
-        "query": query,
-        "target": None,
-        "candidates": [summarize_node(node) for node in candidates],
-        "files": [],
-        "facts": [],
-        "limits": limits(candidate_limit=candidate_limit, candidates_returned=len(candidates)),
-    }
+        result = empty_result("ok", query)
+        result["target"] = summarize_node(candidates[0])
+        result["limits"] = limits(candidate_limit=candidate_limit)
+        return result
+    result = empty_result("ambiguous", query)
+    result["candidates"] = [summarize_node(node) for node in candidates]
+    result["limits"] = limits(
+        candidate_limit=candidate_limit,
+        candidates_returned=len(candidates),
+        candidates_truncated=truncated,
+    )
+    return result
 
 
 def agent_who_calls(store: Store, query: str, fact_limit: int = AGENT_FACT_LIMIT) -> dict[str, Any]:
@@ -43,9 +37,17 @@ def agent_who_calls(store: Store, query: str, fact_limit: int = AGENT_FACT_LIMIT
     if resolved["status"] != "ok":
         return resolved
     target_id = resolved["target"]["node_id"]
-    facts = facts_for_edges(store, store.edges_for_node(target_id, direction="in", rel_types=["CALLS"], limit=fact_limit))
-    files = build_file_plan(resolved["target"], facts, max_files=AGENT_FILE_LIMIT)
-    return with_payload(resolved, files, facts, fact_limit=fact_limit)
+    edges = store.edges_for_node(target_id, direction="in", rel_types=["CALLS"], limit=fact_limit + 1)
+    facts = facts_for_edges(store, edges[:fact_limit])
+    files = build_file_plan(resolved["target"], facts, max_files=AGENT_FILE_LIMIT + 1)
+    return with_payload(
+        resolved,
+        files[:AGENT_FILE_LIMIT],
+        facts,
+        fact_limit=fact_limit,
+        facts_truncated=len(edges) > fact_limit,
+        files_truncated=len(files) > AGENT_FILE_LIMIT,
+    )
 
 
 def agent_calls(store: Store, query: str, fact_limit: int = AGENT_FACT_LIMIT) -> dict[str, Any]:
@@ -53,9 +55,17 @@ def agent_calls(store: Store, query: str, fact_limit: int = AGENT_FACT_LIMIT) ->
     if resolved["status"] != "ok":
         return resolved
     target_id = resolved["target"]["node_id"]
-    facts = facts_for_edges(store, store.edges_for_node(target_id, direction="out", rel_types=["CALLS"], limit=fact_limit))
-    files = build_file_plan(resolved["target"], facts, max_files=AGENT_FILE_LIMIT)
-    return with_payload(resolved, files, facts, fact_limit=fact_limit)
+    edges = store.edges_for_node(target_id, direction="out", rel_types=["CALLS"], limit=fact_limit + 1)
+    facts = facts_for_edges(store, edges[:fact_limit])
+    files = build_file_plan(resolved["target"], facts, max_files=AGENT_FILE_LIMIT + 1)
+    return with_payload(
+        resolved,
+        files[:AGENT_FILE_LIMIT],
+        facts,
+        fact_limit=fact_limit,
+        facts_truncated=len(edges) > fact_limit,
+        files_truncated=len(files) > AGENT_FILE_LIMIT,
+    )
 
 
 def agent_impact(store: Store, query: str, fact_limit: int = AGENT_FACT_LIMIT) -> dict[str, Any]:
@@ -63,49 +73,86 @@ def agent_impact(store: Store, query: str, fact_limit: int = AGENT_FACT_LIMIT) -
     if resolved["status"] != "ok":
         return resolved
     target_id = resolved["target"]["node_id"]
-    edges = store.edges_for_node(target_id, direction="both", rel_types=sorted(IMPACT_REL_TYPES), limit=fact_limit)
-    facts = facts_for_edges(store, edges)
-    files = build_file_plan(resolved["target"], facts, max_files=AGENT_FILE_LIMIT)
-    return with_payload(resolved, files, facts, fact_limit=fact_limit)
+    edges = store.edges_for_node(target_id, direction="both", rel_types=sorted(IMPACT_REL_TYPES), limit=fact_limit + 1)
+    facts = facts_for_edges(store, edges[:fact_limit])
+    files = build_file_plan(resolved["target"], facts, max_files=AGENT_FILE_LIMIT + 1)
+    return with_payload(
+        resolved,
+        files[:AGENT_FILE_LIMIT],
+        facts,
+        fact_limit=fact_limit,
+        facts_truncated=len(edges) > fact_limit,
+        files_truncated=len(files) > AGENT_FILE_LIMIT,
+    )
 
 
-def agent_read_plan(store: Store, query: str, max_files: int = AGENT_FILE_LIMIT, fact_limit: int = AGENT_FACT_LIMIT) -> dict[str, Any]:
+def agent_read_plan(
+    store: Store,
+    query: str,
+    max_files: int = AGENT_FILE_LIMIT,
+    fact_limit: int = AGENT_FACT_LIMIT,
+) -> dict[str, Any]:
     resolved = agent_resolve(store, query)
     if resolved["status"] != "ok":
         return resolved
     target_id = resolved["target"]["node_id"]
-    edges = store.edges_for_node(target_id, direction="both", rel_types=sorted(IMPACT_REL_TYPES), limit=fact_limit)
-    facts = facts_for_edges(store, edges)
-    files = build_file_plan(resolved["target"], facts, max_files=max_files)
-    return with_payload(resolved, files, facts, file_limit=max_files, fact_limit=fact_limit)
+    edges = store.edges_for_node(target_id, direction="both", rel_types=sorted(IMPACT_REL_TYPES), limit=fact_limit + 1)
+    facts = facts_for_edges(store, edges[:fact_limit])
+    files = build_file_plan(resolved["target"], facts, max_files=max_files + 1)
+    return with_payload(
+        resolved,
+        files[:max_files],
+        facts,
+        file_limit=max_files,
+        fact_limit=fact_limit,
+        facts_truncated=len(edges) > fact_limit,
+        files_truncated=len(files) > max_files,
+    )
 
 
-def agent_pack(store: Store, query: str, max_files: int = AGENT_FILE_LIMIT, fact_limit: int = AGENT_FACT_LIMIT) -> dict[str, Any]:
+def agent_pack(
+    store: Store,
+    query: str,
+    max_files: int = AGENT_FILE_LIMIT,
+    fact_limit: int = AGENT_FACT_LIMIT,
+) -> dict[str, Any]:
     resolved = agent_resolve(store, query)
     if resolved["status"] != "ok":
         return resolved
     target_id = resolved["target"]["node_id"]
-    edges = store.edges_for_node(target_id, direction="both", rel_types=sorted(IMPACT_REL_TYPES), limit=fact_limit)
-    facts = facts_for_edges(store, edges)
-    files = build_file_plan(resolved["target"], facts, max_files=max_files)
-    return with_payload(resolved, files, facts, file_limit=max_files, fact_limit=fact_limit)
+    edges = store.edges_for_node(target_id, direction="both", rel_types=sorted(IMPACT_REL_TYPES), limit=fact_limit + 1)
+    facts = facts_for_edges(store, edges[:fact_limit])
+    files = build_file_plan(resolved["target"], facts, max_files=max_files + 1)
+    return with_payload(
+        resolved,
+        files[:max_files],
+        facts,
+        file_limit=max_files,
+        fact_limit=fact_limit,
+        facts_truncated=len(edges) > fact_limit,
+        files_truncated=len(files) > max_files,
+    )
 
 
 def resolve_candidates(store: Store, query: str, limit: int) -> list[dict[str, Any]]:
+    return resolve_candidates_with_meta(store, query, limit)[0]
+
+
+def resolve_candidates_with_meta(store: Store, query: str, limit: int) -> tuple[list[dict[str, Any]], bool]:
     query = query.strip()
     if not query:
-        return []
+        return [], False
     strategies = [
-        store.find_nodes(query, "fqname_exact", limit),
-        store.find_nodes(query, "name_exact", limit),
-        store.find_nodes(query, "file_exact", limit),
-        store.find_nodes(query, "fuzzy", limit),
+        store.find_nodes(query, "fqname_exact", limit + 1),
+        store.find_nodes(query, "name_exact", limit + 1),
+        store.find_nodes(query, "file_exact", limit + 1),
+        store.find_nodes(query, "fuzzy", limit + 1),
     ]
     for candidates in strategies:
         unique = dedupe_nodes(candidates)
         if unique:
-            return unique[:limit]
-    return []
+            return unique[:limit], len(unique) > limit
+    return [], False
 
 
 def facts_for_edges(store: Store, edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -171,17 +218,27 @@ def with_payload(
     facts: list[dict[str, Any]],
     file_limit: int = AGENT_FILE_LIMIT,
     fact_limit: int = AGENT_FACT_LIMIT,
+    files_truncated: bool = False,
+    facts_truncated: bool = False,
 ) -> dict[str, Any]:
     return {
         **resolved,
         "files": files,
         "facts": facts,
-        "limits": limits(file_limit=file_limit, fact_limit=fact_limit, facts_returned=len(facts), files_returned=len(files)),
+        "limits": limits(
+            file_limit=file_limit,
+            fact_limit=fact_limit,
+            facts_returned=len(facts),
+            files_returned=len(files),
+            files_truncated=files_truncated,
+            facts_truncated=facts_truncated,
+        ),
     }
 
 
 def empty_result(status: str, query: str) -> dict[str, Any]:
     return {
+        "schema_version": OUTPUT_SCHEMA_VERSION,
         "status": status,
         "query": query,
         "target": None,
@@ -189,6 +246,14 @@ def empty_result(status: str, query: str) -> dict[str, Any]:
         "files": [],
         "facts": [],
         "limits": limits(),
+        "index": {
+            "state": "unknown",
+            "repo_id": None,
+            "indexed_at": None,
+            "changed_files": 0,
+            "languages": {},
+        },
+        "error": None,
     }
 
 
@@ -197,6 +262,7 @@ def summarize_node(node: dict[str, Any]) -> dict[str, Any]:
         "node_id": node.get("node_id"),
         "fqname": node.get("fqname"),
         "kind": node.get("kind"),
+        "language": node.get("language"),
         "name": node.get("name"),
         "file_path": node.get("file_path"),
         "span": node.get("span"),
@@ -208,7 +274,7 @@ def trim_evidence(evidence: list[dict[str, Any]], limit: int = 2) -> list[dict[s
     return evidence[:limit]
 
 
-def limits(**overrides: int) -> dict[str, int]:
+def limits(**overrides: int | bool) -> dict[str, int | bool]:
     base = {
         "candidate_limit": AGENT_CANDIDATE_LIMIT,
         "file_limit": AGENT_FILE_LIMIT,
@@ -216,6 +282,9 @@ def limits(**overrides: int) -> dict[str, int]:
         "candidates_returned": 0,
         "files_returned": 0,
         "facts_returned": 0,
+        "candidates_truncated": False,
+        "files_truncated": False,
+        "facts_truncated": False,
     }
     base.update(overrides)
     return base

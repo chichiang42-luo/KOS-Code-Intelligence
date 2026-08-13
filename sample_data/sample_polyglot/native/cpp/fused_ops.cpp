@@ -1,0 +1,3 @@
+bool npuFusedOps() {
+    return true;
+}

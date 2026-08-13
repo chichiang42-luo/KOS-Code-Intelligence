@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "resolve_verify_payment",
+      "command": "resolve",
+      "query": "verify_payment",
+      "expected_status": "ok",
+      "target_fqname": "app.payment.service.verify_payment",
+      "required_files": [],
+      "required_facts": []
+    },
+    {
+      "id": "pack_verify_payment",
+      "command": "pack",
+      "query": "verify_payment",
+      "expected_status": "ok",
+      "target_fqname": "app.payment.service.verify_payment",
+      "required_files": [
+        "app/payment/service.py",
+        "app/order/service.py"
+      ],
+      "required_facts": [
+        {
+          "rel_type": "CALLS",
+          "src_fqname": "app.order.service.checkout",
+          "dst_fqname": "app.payment.service.verify_payment"
+        }
+      ]
+    },
+    {
+      "id": "ambiguous_service",
+      "command": "resolve",
+      "query": "service",
+      "expected_status": "ambiguous",
+      "required_files": [],
+      "required_facts": []
+    },
+    {
+      "id": "missing_symbol",
+      "command": "resolve",
+      "query": "definitely_missing_symbol",
+      "expected_status": "not_found",
+      "required_files": [],
+      "required_facts": []
+    }
+  ]
+}

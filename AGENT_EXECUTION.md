@@ -1,80 +1,74 @@
-# AGENT_EXECUTION.md
+# Agent Execution Guide
 
 ## Goal
 
-Implement and operate KOS Code Intelligence MVP v0.1 for Python repositories.
-The MVP extracts static structure from Python AST, builds a property-graph-like model, persists it in JSONL + SQLite, and exposes it through CLI and optional REST API.
+Use KOS as a maintained local code knowledge graph before reading or editing a supported source file.
 
-## Environment
+## Install
 
-Preferred local Python:
-
-```powershell
-F:\heimaAPP\Anaconda3\envs\General_Agent\python.exe
+```bash
+python -m pip install -e .
 ```
 
-Set source path before running commands:
+## Standard Workflow
 
-```powershell
-$env:PYTHONPATH='src'
+1. Check the index:
+
+```bash
+kos status --repo /path/to/project
 ```
 
-## Execution Steps
+2. Initialize or incrementally update it:
 
-1. Initialize storage:
-
-```powershell
-& 'F:\heimaAPP\Anaconda3\envs\General_Agent\python.exe' -m kos.cli init --repo sample_data\sample_shop
+```bash
+kos update --repo /path/to/project
 ```
 
-2. Index the sample repository:
+3. Request a context pack:
 
-```powershell
-& 'F:\heimaAPP\Anaconda3\envs\General_Agent\python.exe' -m kos.cli index --repo sample_data\sample_shop --repo-id sample_shop
+```bash
+kos agent-pack SymbolName --repo /path/to/project
 ```
 
-3. Search a symbol:
+4. Read files in ascending `priority` order and use `facts[].evidence` to verify relationships.
 
-```powershell
-& 'F:\heimaAPP\Anaconda3\envs\General_Agent\python.exe' -m kos.cli search verify_payment --repo sample_data\sample_shop
+5. After changing supported source files, run `kos update` before the next graph query.
+
+## Source Reading Boundary
+
+KOS selects the source that matters; it does not explain every implementation body. Do not read the whole repository by default.
+
+Start with the target span, then read files in the returned priority order. Expand beyond the one-hop read plan only for ambiguous relations, dynamic dispatch, generated code, failing tests, or changes that cross module boundaries.
+
+## MCP Workflow
+
+Configure an MCP client to start:
+
+```bash
+kos-mcp --repo /absolute/path/to/project
 ```
 
-4. Inspect a node or edge:
+The Agent should:
 
-```powershell
-& 'F:\heimaAPP\Anaconda3\envs\General_Agent\python.exe' -m kos.cli show node <node_id> --repo sample_data\sample_shop
-& 'F:\heimaAPP\Anaconda3\envs\General_Agent\python.exe' -m kos.cli show edge <edge_id> --repo sample_data\sample_shop
+1. Call `kos_status`.
+2. Call `kos_languages` when the repository's language coverage is unclear.
+3. Call `kos_update` when the index is stale or uninitialized.
+4. Call `kos_pack` before investigating a symbol.
+5. Use `kos_resolve` when `kos_pack` returns candidates.
+6. Treat low-confidence `MAY_CALL` facts as leads that require source verification.
+
+The MCP server is bound to one repository. It must not accept repository paths through tool arguments.
+
+## Validation
+
+```bash
+python -m unittest discover -s tests -v
+kos eval --repo sample_data/sample_shop --store-root .kos_runs/sample-eval --cases evals/sample_shop.json
 ```
 
-5. Query a local graph:
+Before publishing:
 
-```powershell
-& 'F:\heimaAPP\Anaconda3\envs\General_Agent\python.exe' -m kos.cli neighborhood <node_id> --repo sample_data\sample_shop --hops 1
+```bash
+ruff check .
+python -m build
 ```
-
-6. Ask for an agent context pack before editing code:
-
-```powershell
-& 'F:\heimaAPP\Anaconda3\envs\General_Agent\python.exe' -m kos.cli agent-pack verify_payment --repo sample_data\sample_shop
-```
-
-For an external indexed repository:
-
-```powershell
-& 'F:\heimaAPP\Anaconda3\envs\General_Agent\python.exe' -m kos.cli agent-pack ModelManager --store-root '.\.kos_runs\Wan-Dancer-14B-batch'
-```
-
-7. Run tests:
-
-```powershell
-& 'F:\heimaAPP\Anaconda3\envs\General_Agent\python.exe' -m unittest discover -s tests -v
-```
-
-## Completion Criteria
-
-- Full indexing completes without crashing on syntax-error fixtures.
-- `verify_payment` is searchable.
-- The local graph around `verify_payment` includes a `CALLS` edge from checkout flow.
-- `agent-pack verify_payment` returns target, facts, and read-plan files.
-- Reindexing after a rename marks missing previous entities as deleted.
-- Unit tests pass.

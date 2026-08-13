@@ -4,30 +4,42 @@ import ast
 import tokenize
 from pathlib import Path
 
+from .languages import detect_language, iter_source_files, module_name_from_path
 from .schemas import Observation, Span
-
-
-SKIP_DIRS = {".git", ".hg", ".svn", ".kos", ".venv", "venv", "__pycache__", "node_modules"}
 
 
 def observe_repo(repo_path: Path, repo_id: str | None = None) -> list[Observation]:
     root = repo_path.resolve()
     rid = repo_id or root.name
     observations: list[Observation] = []
-    for path in sorted(root.rglob("*.py")):
-        rel_parts = path.relative_to(root).parts
-        if any(part in SKIP_DIRS for part in rel_parts):
-            continue
+    for path in iter_source_files(root):
         observations.extend(observe_file(path, root, rid))
     return observations
 
 
+def iter_python_files(repo_path: Path) -> list[Path]:
+    """Compatibility helper retained for callers that only want Python files."""
+    return [path for path in iter_source_files(repo_path) if detect_language(path) == "python"]
+
+
 def observe_file(file_path: Path, repo_root: Path, repo_id: str) -> list[Observation]:
+    language = detect_language(file_path)
+    if language is None:
+        return []
+    if language != "python":
+        from .tree_sitter_observer import observe_tree_sitter_file
+
+        return observe_tree_sitter_file(file_path, repo_root, repo_id, language)
+    return observe_python_file(file_path, repo_root, repo_id)
+
+
+def observe_python_file(file_path: Path, repo_root: Path, repo_id: str) -> list[Observation]:
     rel_path = file_path.relative_to(repo_root).as_posix()
-    module = module_name_from_path(Path(rel_path))
+    module = module_name_from_path(Path(rel_path), "python")
+    base_raw = {"language": "python", "parser": "python_ast"}
     observations = [
-        Observation("file", repo_id, rel_path, file_path.name, rel_path),
-        Observation("module", repo_id, rel_path, module, module, parent=rel_path),
+        Observation("file", repo_id, rel_path, file_path.name, rel_path, raw=dict(base_raw)),
+        Observation("module", repo_id, rel_path, module, module, parent=rel_path, raw=dict(base_raw)),
     ]
     source = read_python_source(file_path)
     try:
@@ -41,21 +53,17 @@ def observe_file(file_path: Path, repo_root: Path, repo_id: str) -> list[Observa
                 "SyntaxError",
                 f"{module}:SyntaxError",
                 span=Span(exc.lineno or 1, exc.offset or 0, exc.lineno or 1, exc.offset or 0),
-                raw={"message": exc.msg},
+                raw={**base_raw, "message": exc.msg},
             )
         )
         return observations
-    visitor = AstObserver(repo_id, rel_path, module)
+    visitor = AstObserver(repo_id, rel_path, module, file_path.name == "__init__.py")
     visitor.visit(tree)
+    for observation in visitor.observations:
+        observation.raw.setdefault("language", "python")
+        observation.raw.setdefault("parser", "python_ast")
     observations.extend(visitor.observations)
     return observations
-
-
-def module_name_from_path(path: Path) -> str:
-    parts = list(path.with_suffix("").parts)
-    if parts[-1] == "__init__":
-        parts.pop()
-    return ".".join(parts)
 
 
 def read_python_source(file_path: Path) -> str:
@@ -67,11 +75,13 @@ def read_python_source(file_path: Path) -> str:
 
 
 class AstObserver(ast.NodeVisitor):
-    def __init__(self, repo_id: str, file_path: str, module: str) -> None:
+    def __init__(self, repo_id: str, file_path: str, module: str, is_package: bool = False) -> None:
         self.repo_id = repo_id
         self.file_path = file_path
         self.module = module
+        self.is_package = is_package
         self.scope_stack: list[tuple[str, str]] = [("module", module)]
+        self.class_stack: list[str] = []
         self.observations: list[Observation] = []
 
     @property
@@ -80,12 +90,13 @@ class AstObserver(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
+            local_name = alias.asname or alias.name.split(".", 1)[0]
             self.observations.append(
                 Observation(
                     "import",
                     self.repo_id,
                     self.file_path,
-                    alias.asname or alias.name,
+                    local_name,
                     self.module,
                     span=span_for(node),
                     target=alias.name,
@@ -94,9 +105,8 @@ class AstObserver(ast.NodeVisitor):
             )
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        module = "." * node.level + (node.module or "")
         for alias in node.names:
-            target = f"{module}.{alias.name}".strip(".")
+            target = resolve_import_target(self.module, self.is_package, node.level, node.module, alias.name)
             self.observations.append(
                 Observation(
                     "import",
@@ -106,7 +116,12 @@ class AstObserver(ast.NodeVisitor):
                     self.module,
                     span=span_for(node),
                     target=target,
-                    raw={"alias": alias.asname, "module": module, "style": "from"},
+                    raw={
+                        "alias": alias.asname,
+                        "module": node.module,
+                        "level": node.level,
+                        "style": "from",
+                    },
                 )
             )
 
@@ -138,7 +153,9 @@ class AstObserver(ast.NodeVisitor):
                 )
             )
         self.scope_stack.append(("class", fqname))
+        self.class_stack.append(fqname)
         self.generic_visit(node)
+        self.class_stack.pop()
         self.scope_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -180,9 +197,29 @@ class AstObserver(ast.NodeVisitor):
                 span=span_for(node),
                 parent=caller,
                 target=expr_name(node.func),
+                raw={
+                    "module": self.module,
+                    "class_fqname": self.class_stack[-1] if self.class_stack else None,
+                },
             )
         )
         self.generic_visit(node)
+
+
+def resolve_import_target(
+    current_module: str,
+    is_package: bool,
+    level: int,
+    imported_module: str | None,
+    imported_name: str,
+) -> str:
+    if level == 0:
+        return ".".join(part for part in (imported_module, imported_name) if part)
+    package_parts = current_module.split(".") if is_package else current_module.split(".")[:-1]
+    keep = max(0, len(package_parts) - (level - 1))
+    prefix = package_parts[:keep]
+    suffix = [part for part in (imported_module, imported_name) if part]
+    return ".".join([*prefix, *suffix])
 
 
 def span_for(node: ast.AST) -> Span:

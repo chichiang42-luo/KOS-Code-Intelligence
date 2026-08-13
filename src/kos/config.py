@@ -3,9 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-
-DEFAULT_CONFIG = """repo_id: sample_shop
-language: python
+DEFAULT_CONFIG = """repo_id: repository
+language: polyglot
 storage:
   sqlite_path: .kos/graph.db
   jsonl_dir: .kos/logs
@@ -22,14 +21,14 @@ api:
   port: 8031
 parsers:
   python_ast: true
-  tree_sitter: false
+  tree_sitter: true
 """
 
 
 @dataclass(slots=True)
 class KosConfig:
     repo_id: str = "sample_shop"
-    language: str = "python"
+    language: str = "polyglot"
     sqlite_path: str = ".kos/graph.db"
     jsonl_dir: str = ".kos/logs"
     api_host: str = "127.0.0.1"

@@ -11,7 +11,6 @@ from kos.indexer import index_repo
 from kos.observation import observe_repo
 from kos.storage import Store
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "sample_data" / "sample_shop"
 
@@ -21,6 +20,7 @@ class MvpTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.repo = self.tmp / "sample_shop"
         shutil.copytree(SAMPLE, self.repo)
+        shutil.rmtree(self.repo / ".kos", ignore_errors=True)
 
     def tearDown(self) -> None:
         for attempt in range(5):

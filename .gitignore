@@ -3,8 +3,25 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 .venv/
 venv/
+build/
+dist/
+*.egg-info/
 .kos/
 .kos_runs/
 sample_data/sample_shop/.kos/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.claude/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

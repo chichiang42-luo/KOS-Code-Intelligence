@@ -1,17 +1,29 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
-
-NodeKind = Literal["repository", "file", "module", "class", "function", "method"]
+NodeKind = Literal[
+    "repository",
+    "file",
+    "module",
+    "class",
+    "interface",
+    "enum",
+    "record",
+    "struct",
+    "trait",
+    "function",
+    "method",
+    "selector",
+]
 RelType = Literal["CONTAINS", "DEFINES", "IMPORTS", "CALLS", "MAY_CALL", "INHERITS"]
 Status = Literal["active", "superseded", "deleted", "uncertain"]
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass(slots=True)
